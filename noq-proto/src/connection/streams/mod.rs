@@ -413,10 +413,6 @@ struct PendingStreamsQueue {
     /// and writing a stream is interrupted while the stream still has some pending data. See
     /// `reinsert_pending()`.
     next: Option<PendingStream>,
-    /// A monotonically decreasing counter, used to implement round-robin scheduling for streams of
-    /// the same priority. Underflowing is not a practical concern, as it is initialized to
-    /// u64::MAX and only decremented by 1 in `push_pending`
-    recency: u64,
 }
 
 impl PendingStreamsQueue {
@@ -424,7 +420,6 @@ impl PendingStreamsQueue {
         Self {
             streams: BinaryHeap::new(),
             next: None,
-            recency: u64::MAX,
         }
     }
 
@@ -442,16 +437,6 @@ impl PendingStreamsQueue {
     /// Push a pending stream ID with the given priority, queued after any already-queued streams
     /// for the priority
     fn push_pending(&mut self, id: StreamId, priority: u64, incremental: bool) {
-        // Note that in the case where fairness is disabled, if we have a reinserted stream we don't
-        // bump it even if priority > next.priority. In order to minimize fragmentation we
-        // always try to complete a stream once part of it has been written.
-
-        // As the recency counter is monotonically decreasing, we know that using its value to sort
-        // this stream will queue it after all other queued streams of the same priority.
-        // This is enough to implement round-robin scheduling for streams that are still pending
-        // even after being handled, as in that case they are removed from the `BinaryHeap`,
-        // handled, and then immediately reinserted.
-        self.recency -= 1;
         self.streams.push(PendingStream {
             priority,
             incremental,
@@ -478,7 +463,7 @@ impl PendingStreamsQueue {
     }
 }
 
-/// The [`StreamId`] of a stream with pending data queued, ordered by its priority and recency
+/// The [`StreamId`] of a stream with pending data queued, ordered by its priority
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct PendingStream {
     /// The priority of the stream
@@ -488,10 +473,8 @@ struct PendingStream {
     // Controls whether the stream will be fairly multiplexed with others at the same urgency level.
     incremental: bool,
 
-    /// The ID of the stream
-    // The way this type is used ensures that every instance has a unique `recency` value, so this
-    // field should be kept below the `priority` and `recency` fields, so that it does not
-    // interfere with the behaviour of the `Ord` derive
+    /// The ID of the stream.
+    // Breaks ties in non-incremental cases (lower stream IDs are sent first). 
     id: StreamId,
 }
 
