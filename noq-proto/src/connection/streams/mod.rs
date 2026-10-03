@@ -2,7 +2,7 @@ use std::{
     collections::{BinaryHeap, hash_map},
     io,
 };
-
+use std::cmp::Ordering;
 use bytes::Bytes;
 use thiserror::Error;
 use tracing::trace;
@@ -409,73 +409,104 @@ impl<'a> SendStream<'a> {
 /// A queue of streams with pending outgoing data, sorted by priority
 struct PendingStreamsQueue {
     streams: BinaryHeap<PendingStream>,
-    /// The next stream to write out. This is `Some` when `TransportConfig::send_fairness(false)`
-    /// and writing a stream is interrupted while the stream still has some pending data. See
-    /// `reinsert_pending()`.
-    next: Option<PendingStream>,
+    /// A monotonically decreasing counter, used to implement round-robin scheduling for incremental
+    /// streams of the same priority. Underflowing is not a practical concern, as it is initialized
+    /// to u64::MAX and only decremented by 1 in `push_pending`
+    recency: u64,
 }
 
 impl PendingStreamsQueue {
     fn new() -> Self {
         Self {
             streams: BinaryHeap::new(),
-            next: None,
+            recency: u64::MAX,
         }
-    }
-
-    /// Reinsert a stream that was pending and still contains unsent data.
-    fn reinsert_pending(&mut self, id: StreamId, priority: u64, incremental: bool) {
-        assert!(self.next.is_none());
-
-        self.next = Some(PendingStream {
-            priority,
-            incremental,
-            id,
-        });
     }
 
     /// Push a pending stream ID with the given priority, queued after any already-queued streams
     /// for the priority
     fn push_pending(&mut self, id: StreamId, priority: u64, incremental: bool) {
+        // Note that in the non-incremental case, fragmentation is minimized and we always try to
+        // complete a stream once part of it has been written.
+
+        // As the recency counter is monotonically decreasing, we know that using its value to sort
+        // the stream will queue it after all other queued incremental streams of the same priority.
+        // This is enough to implement round-robin scheduling for incremental streams that are still
+        // pending even after being handled, as in that case they are removed from the `BinaryHeap`,
+        // handled, and then immediately reinserted.
+        if incremental {
+            self.recency -= 1;
+        }
+
         self.streams.push(PendingStream {
             priority,
             incremental,
+            recency: if incremental { self.recency } else { u64::MAX },
             id,
         });
     }
 
     fn pop(&mut self) -> Option<PendingStream> {
-        self.next.take().or_else(|| self.streams.pop())
+        self.streams.pop()
     }
 
     fn clear(&mut self) {
-        self.next = None;
         self.streams.clear();
     }
 
     fn iter(&self) -> impl Iterator<Item = &PendingStream> {
-        self.next.iter().chain(self.streams.iter())
+        self.streams.iter()
     }
 
     #[cfg(test)]
     fn len(&self) -> usize {
-        self.streams.len() + self.next.is_some() as usize
+        self.streams.len()
     }
 }
 
-/// The [`StreamId`] of a stream with pending data queued, ordered by its priority
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+/// The [`StreamId`] of a stream with pending data queued, ordered by its priority and recency
+#[derive(Clone, PartialEq, Eq)]
 struct PendingStream {
-    /// The priority of the stream
+    /// The priority of the stream. Higher values correspond to higher urgencies.
+    // Note that this field should be kept above the `recency` field, in order for the `Ord` derive
+    // to be correct (See https://doc.rust-lang.org/stable/std/cmp/trait.Ord.html#derivable)
     priority: u64,
 
     /// Whether the stream can be processed in chunks
     // Controls whether the stream will be fairly multiplexed with others at the same urgency level.
     incremental: bool,
 
+    /// A tie-breaker for incremental streams of the same priority, used to implement
+    /// round-robin scheduling: Larger values are prioritized, so it is initialised to
+    /// `u64::MAX`, and when an incremental stream writes data, we know that it currently has
+    /// the highest recency value, so it is deprioritized by setting its recency to 1 less than the
+    /// previous lowest recency value, such that all other streams of this priority will get
+    /// processed once before we get back round to this one. The recency does not change for
+    /// non-incremental streams, to ensure that the comparison is done with the stream ID.
+    recency: u64,
+
     /// The ID of the stream.
-    // Breaks ties in non-incremental cases (lower stream IDs are sent first). 
+    // Breaks ties in non-incremental cases (lower stream IDs are sent first).
+    // The way this type is used ensures that every instance has a unique `recency` value, so this
+    // field should be kept below the `priority`, `incremental`, and `recency` fields, so that it
+    // does not interfere with the behaviour of the `Ord` derive
     id: StreamId,
+}
+
+impl Ord for PendingStream {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.priority
+            .cmp(&other.priority) // Higher urgency first
+            .then_with(|| other.incremental.cmp(&self.incremental))// non-incremental first
+            .then_with(|| self.recency.cmp(&other.recency))// older first, when incremental
+            .then_with(|| other.id.cmp(&self.id)) // lower stream ID first, when non-incremental
+    }
+}
+
+impl PartialOrd for PendingStream {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 /// Application events about streams

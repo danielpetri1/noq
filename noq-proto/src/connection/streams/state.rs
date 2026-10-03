@@ -522,7 +522,6 @@ impl StreamsState {
     pub(in crate::connection) fn write_stream_frames<'a, 'b>(
         &mut self,
         builder: &mut PacketBuilder<'a, 'b>,
-        fair: bool,
         stats: &mut FrameStats,
     ) {
         while builder.frame_space_remaining() > frame::Stream::SIZE_BOUND {
@@ -559,15 +558,10 @@ impl StreamsState {
 
             if stream.is_pending() {
                 // If the stream still has pending data, reinsert it, possibly with an updated
-                // priority value Fairness with other streams is achieved by
-                // implementing round-robin scheduling, so that the other streams
-                // will have a chance to write data before we touch this stream
-                // again.
-                if fair {
-                    self.pending.push_pending(id, stream.priority, stream.incremental);
-                } else {
-                    self.pending.reinsert_pending(id, stream.priority, stream.incremental);
-                }
+                // priority value. Fairness with other streams is achieved via round-robin in
+                // the incremental case, so that the other streams will have a chance to write data
+                // before we touch this stream again.
+                self.pending.push_pending(id, stream.priority, stream.incremental);
             }
 
             let range = offsets.clone();
@@ -578,13 +572,13 @@ impl StreamsState {
     }
 
     #[cfg(test)]
-    fn write_frames_for_test(&mut self, capacity: usize, fair: bool) -> frame::StreamMetaVec {
+    fn write_frames_for_test(&mut self, capacity: usize) -> frame::StreamMetaVec {
         let buf = &mut Vec::with_capacity(capacity);
         let mut tbuf = crate::connection::TransmitBuf::new(buf, std::num::NonZeroUsize::MIN, 1_200);
         tbuf.start_new_datagram_with_size(capacity);
         let builder = &mut PacketBuilder::simple_data_buf(&mut tbuf);
         let stats = &mut FrameStats::default();
-        self.write_stream_frames(builder, fair, stats);
+        self.write_stream_frames(builder, stats);
         builder.sent_frames().stream_frames.clone()
     }
 
@@ -1396,7 +1390,7 @@ mod tests {
         high.set_priority(1).unwrap();
         high.write(b"high").unwrap();
 
-        let meta = server.write_frames_for_test(40, true);
+        let meta = server.write_frames_for_test(40);
         assert_eq!(meta[0].id, id_high);
         assert_eq!(meta[1].id, id_mid);
         assert_eq!(meta[2].id, id_low);
@@ -1454,7 +1448,7 @@ mod tests {
         };
         high.set_priority(0).unwrap();
 
-        let meta = server.write_frames_for_test(40, true);
+        let meta = server.write_frames_for_test(40);
         assert_eq!(meta.len(), 1);
         assert_eq!(meta[0].id, id_high);
 
@@ -1462,7 +1456,7 @@ mod tests {
         assert_eq!(server.pending.len(), 2);
 
         // Send the remaining data. The initial mid priority one should go first now
-        let meta = server.write_frames_for_test(1000 - 40, true);
+        let meta = server.write_frames_for_test(1000 - 40);
         assert_eq!(meta.len(), 2);
         assert_eq!(meta[0].id, id_mid);
         assert_eq!(meta[1].id, id_high);
@@ -1521,7 +1515,7 @@ mod tests {
 
             // loop until all the streams are written
             loop {
-                let meta = server.write_frames_for_test(40, fair);
+                let meta = server.write_frames_for_test(40);
                 if meta.is_empty() {
                     break;
                 }
@@ -1590,7 +1584,7 @@ mod tests {
         let mut metas = vec![];
 
         // Write the first chunk of stream_a
-        let meta = server.write_frames_for_test(40, false);
+        let meta = server.write_frames_for_test(40);
         assert!(!meta.is_empty());
         metas.extend(meta);
 
@@ -1606,7 +1600,7 @@ mod tests {
 
         // loop until all the streams are written
         loop {
-            let meta = server.write_frames_for_test(40, false);
+            let meta = server.write_frames_for_test(40);
             if meta.is_empty() {
                 break;
             }

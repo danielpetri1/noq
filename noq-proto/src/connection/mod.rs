@@ -6579,7 +6579,7 @@ impl Connection {
             && space_id == SpaceId::Data
         {
             self.streams
-                .write_stream_frames(builder, self.config.send_fairness, stats);
+                .write_stream_frames(builder, stats);
         }
     }
 
