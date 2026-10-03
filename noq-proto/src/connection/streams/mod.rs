@@ -413,6 +413,9 @@ impl<'a> SendStream<'a> {
 /// A queue of streams with pending outgoing data, sorted by priority
 struct PendingStreamsQueue {
     streams: BinaryHeap<PendingStream>,
+    /// Treat all queued streams as incremental, regardless of their individual flags.
+    // This is to avoid breaking the old behavior 
+    send_fairness: bool,
     /// A decreasing `u64` counter, separate from the signed stream priority, used to implement
     /// round-robin scheduling for incremental streams of the same priority. It starts at
     /// `u64::MAX` and decreases once per incremental insertion, so underflow is impractical.
@@ -420,9 +423,10 @@ struct PendingStreamsQueue {
 }
 
 impl PendingStreamsQueue {
-    fn new() -> Self {
+    fn new(send_fairness: bool) -> Self {
         Self {
             streams: BinaryHeap::new(),
+            send_fairness,
             recency: u64::MAX,
         }
     }
@@ -430,6 +434,8 @@ impl PendingStreamsQueue {
     /// Push a pending stream ID with the given priority, queued after any already-queued streams
     /// for the priority
     fn push_pending(&mut self, id: StreamId, priority: i32, incremental: bool) {
+        let incremental = self.send_fairness || incremental;
+
         // Note that in the non-incremental case, fragmentation is minimized and we always try to
         // complete a stream once part of it has been written.
 
@@ -481,7 +487,7 @@ struct PendingStream {
     // Larger values win. The stream ID decides the ordering of non-incremental streams.
     recency: u64,
 
-    /// The stream ID. Lower non-incremental IDs are scheduled first. 
+    /// The stream ID. Lower non-incremental IDs are scheduled first.
     id: StreamId,
 }
 
@@ -489,8 +495,8 @@ impl Ord for PendingStream {
     fn cmp(&self, other: &Self) -> Ordering {
         self.priority
             .cmp(&other.priority) // Higher urgency first
-            .then_with(|| other.incremental.cmp(&self.incremental)) // i=0 first
-            .then_with(|| self.recency.cmp(&other.recency)) // older first; i=1
+            .then_with(|| other.incremental.cmp(&self.incremental)) // i=false first
+            .then_with(|| self.recency.cmp(&other.recency)) // round-robin when i=true
             .then_with(|| other.id.cmp(&self.id)) // lower stream ID first, when non-incremental
     }
 }

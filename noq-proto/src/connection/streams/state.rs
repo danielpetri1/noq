@@ -150,6 +150,7 @@ impl StreamsState {
         send_window: u64,
         receive_window: VarInt,
         stream_receive_window: VarInt,
+        send_fairness: bool,
     ) -> Self {
         Self {
             side,
@@ -167,7 +168,7 @@ impl StreamsState {
             opened: [false, false],
             next_reported_remote: [0, 0],
             send_streams: 0,
-            pending: PendingStreamsQueue::new(),
+            pending: PendingStreamsQueue::new(send_fairness),
             events: VecDeque::new(),
             connection_blocked: Vec::new(),
             max_data: 0,
@@ -965,12 +966,16 @@ pub(super) fn get_or_insert_recv(
 mod tests {
     use super::*;
     use crate::{
-        ReadableError, RecvStream, SendStream, TransportErrorCode, WriteError,
+        ReadableError, RecvStream, SendStream, TransportConfig, TransportErrorCode, WriteError,
         connection::State as ConnState, connection::Streams,
     };
     use bytes::Bytes;
 
     fn make(side: Side) -> StreamsState {
+        make_with_fairness(side, TransportConfig::default().send_fairness)
+    }
+
+    fn make_with_fairness(side: Side, send_fairness: bool) -> StreamsState {
         StreamsState::new(
             side,
             128u32.into(),
@@ -978,6 +983,7 @@ mod tests {
             1024 * 1024,
             (1024 * 1024u32).into(),
             (1024 * 1024u32).into(),
+            send_fairness,
         )
     }
 
@@ -990,6 +996,7 @@ mod tests {
             1024 * 1024,
             (1024 * 1024u32).into(),
             (1024 * 1024u32).into(),
+            true,
         );
         let id = StreamId::new(Side::Server, Dir::Uni, 0);
         let initial_max = client.local_max_data;
@@ -1470,8 +1477,13 @@ mod tests {
 
     #[test]
     fn same_stream_priority() {
-        for fair in [true, false] {
-            let mut server = make(Side::Server);
+        for setting in [None, Some(true), Some(false)] {
+            let mut config = TransportConfig::default();
+            if let Some(fair) = setting {
+                config.send_fairness(fair);
+            }
+            let fair = setting.unwrap_or(true);
+            let mut server = make_with_fairness(Side::Server, config.send_fairness);
             server.set_params(&TransportParameters {
                 initial_max_streams_bidi: 3u32.into(),
                 initial_max_data: 300u32.into(),
@@ -1548,8 +1560,8 @@ mod tests {
     }
 
     #[test]
-    fn unfair_priority_bump() {
-        let mut server = make(Side::Server);
+    fn non_incremental_priority_bump() {
+        let mut server = make_with_fairness(Side::Server, false);
         server.set_params(&TransportParameters {
             initial_max_streams_bidi: 3u32.into(),
             initial_max_data: 300u32.into(),
@@ -1616,9 +1628,8 @@ mod tests {
         let stream_ids = metas.iter().map(|m| m.id).collect::<Vec<_>>();
         assert_eq!(
             stream_ids,
-            // stream_c bumps stream_b but doesn't bump stream_a which had already been partly
-            // written out
-            vec![id_a, id_a, id_a, id_c, id_c, id_c, id_b, id_b, id_b]
+            // Higher-priority stream_c preempts the partly written non-incremental stream_a.
+            vec![id_a, id_c, id_c, id_c, id_a, id_a, id_b, id_b, id_b]
         );
     }
 
@@ -1890,6 +1901,7 @@ mod tests {
             1024 * 1024,
             (1024 * 1024u32).into(),
             (1024 * 1024u32).into(),
+            true,
         );
         // No slots allocated until a stream is actually received.
         assert!(client.recv.is_empty());
