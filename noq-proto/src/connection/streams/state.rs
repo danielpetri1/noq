@@ -561,7 +561,8 @@ impl StreamsState {
                 // priority value. Fairness with other streams is achieved via round-robin in
                 // the incremental case, so that the other streams will have a chance to write data
                 // before we touch this stream again.
-                self.pending.push_pending(id, stream.priority, stream.incremental);
+                self.pending
+                    .push_pending(id, stream.priority, stream.incremental);
             }
 
             let range = offsets.clone();
@@ -618,7 +619,8 @@ impl StreamsState {
             return;
         };
         if !stream.is_pending() {
-            self.pending.push_pending(frame.id, stream.priority, stream.incremental);
+            self.pending
+                .push_pending(frame.id, stream.priority, stream.incremental);
         }
         stream.fin_pending |= frame.fin;
         stream.pending.retransmit(frame.offsets);
@@ -637,7 +639,8 @@ impl StreamsState {
                     continue;
                 }
                 if !stream.is_pending() {
-                    self.pending.push_pending(id, stream.priority, stream.incremental);
+                    self.pending
+                        .push_pending(id, stream.priority, stream.incremental);
                 }
                 stream.pending.retransmit_all_for_0rtt();
             }
@@ -1378,7 +1381,7 @@ mod tests {
             pending: &mut pending,
             conn_state: &state,
         };
-        low.set_priority(0).unwrap();
+        low.set_priority(-1).unwrap();
         low.write(b"low").unwrap();
 
         let mut high = SendStream {
@@ -1446,7 +1449,7 @@ mod tests {
             pending: &mut pending,
             conn_state: &state,
         };
-        high.set_priority(0).unwrap();
+        high.set_priority(-1).unwrap();
 
         let meta = server.write_frames_for_test(40);
         assert_eq!(meta.len(), 1);

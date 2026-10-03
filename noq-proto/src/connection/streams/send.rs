@@ -12,7 +12,7 @@ pub(super) struct Send {
     pub(super) max_data: u64,
     pub(super) state: SendState,
     pub(super) pending: SendBuffer,
-    pub(super) priority: u64,
+    pub(super) priority: i32,
     pub(super) incremental: bool,
     /// Whether a frame containing a FIN bit must be transmitted.
     ///
