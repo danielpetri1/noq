@@ -1384,7 +1384,7 @@ mod tests {
             pending: &mut pending,
             conn_state: &state,
         };
-        low.set_priority(-1).unwrap();
+        low.set_priority(0).unwrap();
         low.write(b"low").unwrap();
 
         let mut high = SendStream {
@@ -1452,7 +1452,7 @@ mod tests {
             pending: &mut pending,
             conn_state: &state,
         };
-        high.set_priority(-1).unwrap();
+        high.set_priority(0).unwrap();
 
         let meta = server.write_frames_for_test(40, true);
         assert_eq!(meta.len(), 1);
