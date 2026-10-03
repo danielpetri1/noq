@@ -308,7 +308,7 @@ impl<'a> SendStream<'a> {
         self.state.unacked_data += written.bytes as u64;
         trace!(stream = %self.id, "wrote {} bytes", written.bytes);
         if !was_pending {
-            self.state.pending.push_pending(self.id, stream.priority);
+            self.state.pending.push_pending(self.id, stream.priority, stream.incremental);
         }
         Ok(written)
     }
@@ -339,7 +339,7 @@ impl<'a> SendStream<'a> {
         let was_pending = stream.is_pending();
         stream.finish()?;
         if !was_pending {
-            self.state.pending.push_pending(self.id, stream.priority);
+            self.state.pending.push_pending(self.id, stream.priority, stream.incremental);
         }
 
         Ok(())
@@ -378,7 +378,7 @@ impl<'a> SendStream<'a> {
     ///
     /// # Panics
     /// - when applied to a receive stream
-    pub fn set_priority(&mut self, priority: i32) -> Result<(), ClosedStream> {
+    pub fn set_priority(&mut self, priority: u64) -> Result<(), ClosedStream> {
         let max_send_data = self.state.max_send_data(self.id);
         let stream = self
             .state
@@ -395,7 +395,7 @@ impl<'a> SendStream<'a> {
     ///
     /// # Panics
     /// - when applied to a receive stream
-    pub fn priority(&self) -> Result<i32, ClosedStream> {
+    pub fn priority(&self) -> Result<u64, ClosedStream> {
         let stream = self
             .state
             .send
@@ -429,19 +429,19 @@ impl PendingStreamsQueue {
     }
 
     /// Reinsert a stream that was pending and still contains unsent data.
-    fn reinsert_pending(&mut self, id: StreamId, priority: i32) {
+    fn reinsert_pending(&mut self, id: StreamId, priority: u64, incremental: bool) {
         assert!(self.next.is_none());
 
         self.next = Some(PendingStream {
             priority,
-            recency: self.recency, // the value here doesn't really matter
+            incremental,
             id,
         });
     }
 
     /// Push a pending stream ID with the given priority, queued after any already-queued streams
     /// for the priority
-    fn push_pending(&mut self, id: StreamId, priority: i32) {
+    fn push_pending(&mut self, id: StreamId, priority: u64, incremental: bool) {
         // Note that in the case where fairness is disabled, if we have a reinserted stream we don't
         // bump it even if priority > next.priority. In order to minimize fragmentation we
         // always try to complete a stream once part of it has been written.
@@ -454,7 +454,7 @@ impl PendingStreamsQueue {
         self.recency -= 1;
         self.streams.push(PendingStream {
             priority,
-            recency: self.recency,
+            incremental,
             id,
         });
     }
@@ -482,16 +482,12 @@ impl PendingStreamsQueue {
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct PendingStream {
     /// The priority of the stream
-    // Note that this field should be kept above the `recency` field, in order for the `Ord` derive
-    // to be correct (See https://doc.rust-lang.org/stable/std/cmp/trait.Ord.html#derivable)
-    priority: i32,
-    /// A tie-breaker for streams of the same priority, used to improve fairness by implementing
-    /// round-robin scheduling: Larger values are prioritized, so it is initialised to
-    /// `u64::MAX`, and when a stream writes data, we know that it currently has the highest
-    /// recency value, so it is deprioritized by setting its recency to 1 less than the
-    /// previous lowest recency value, such that all other streams of this priority will get
-    /// processed once before we get back round to this one
-    recency: u64,
+    priority: u64,
+
+    /// Whether the stream can be processed in chunks
+    // Controls whether the stream will be fairly multiplexed with others at the same urgency level.
+    incremental: bool,
+
     /// The ID of the stream
     // The way this type is used ensures that every instance has a unique `recency` value, so this
     // field should be kept below the `priority` and `recency` fields, so that it does not

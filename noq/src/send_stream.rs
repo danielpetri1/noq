@@ -227,14 +227,14 @@ impl SendStream {
     /// the priority of a stream with pending data may only take effect after that data has been
     /// transmitted. Using many different priority levels per connection may have a negative
     /// impact on performance.
-    pub fn set_priority(&self, priority: i32) -> Result<(), ClosedStream> {
+    pub fn set_priority(&self, priority: u64) -> Result<(), ClosedStream> {
         let mut conn = self.conn.lock_without_waking("SendStream::set_priority");
         conn.inner.send_stream(self.stream).set_priority(priority)?;
         Ok(())
     }
 
     /// Get the priority of the send stream
-    pub fn priority(&self) -> Result<i32, ClosedStream> {
+    pub fn priority(&self) -> Result<u64, ClosedStream> {
         let mut conn = self.conn.lock_without_waking("SendStream::priority");
         conn.inner.send_stream(self.stream).priority()
     }
