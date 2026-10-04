@@ -414,29 +414,16 @@ impl<'a> SendStream<'a> {
 /// A queue of streams with pending outgoing data, sorted by priority
 struct PendingStreamsQueue {
     streams: BinaryHeap<PendingStream>,
-    /// Treat all queued streams as incremental, regardless of their individual flags.
-    // This flag avoids breaking the old behavior and should be treated as deprecated
-    send_fairness: bool,
     /// A decreasing `u64` counter, separate from the signed stream priority, used to implement
     /// round-robin scheduling for incremental streams of the same priority. It starts at
     /// `u64::MAX` and decreases once per incremental insertion, so underflow is impractical.
     recency: u64,
 }
 
-impl Default for PendingStreamsQueue {
-    // The default here is set to false so that we can have the more granular scheduling
-    // outlined in RFC 9218. For backward compatibility, instantiations preserve ::new(true) across
-    // the codebase, effectively marking all streams as incremental.
-    fn default() -> Self {
-        Self::new(false)
-    }
-}
-
 impl PendingStreamsQueue {
-    fn new(send_fairness: bool) -> Self {
+    fn new() -> Self {
         Self {
             streams: BinaryHeap::new(),
-            send_fairness,
             recency: u64::MAX,
         }
     }
@@ -444,8 +431,6 @@ impl PendingStreamsQueue {
     /// Push a pending stream ID with the given priority, queued after any already-queued streams
     /// for the priority
     fn push_pending(&mut self, id: StreamId, priority: i32, incremental: bool) {
-        let incremental = self.send_fairness || incremental;
-
         // Note that in the non-incremental case, fragmentation is minimized and we always try to
         // complete a stream once part of it has been written.
 

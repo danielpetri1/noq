@@ -411,7 +411,6 @@ impl Connection {
                 config.send_window,
                 config.receive_window,
                 config.stream_receive_window,
-                config.send_fairness,
             ),
             datagrams: DatagramState::default(),
             config,

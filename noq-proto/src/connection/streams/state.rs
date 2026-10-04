@@ -167,7 +167,7 @@ impl StreamsState {
             opened: [false, false],
             next_reported_remote: [0, 0],
             send_streams: 0,
-            pending: PendingStreamsQueue::default(),
+            pending: PendingStreamsQueue::new(),
             events: VecDeque::new(),
             connection_blocked: Vec::new(),
             max_data: 0,
