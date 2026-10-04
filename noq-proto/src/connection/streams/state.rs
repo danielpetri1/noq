@@ -573,13 +573,13 @@ impl StreamsState {
     }
 
     #[cfg(test)]
-    fn write_frames_for_test(&mut self, capacity: usize) -> frame::StreamMetaVec {
+    fn write_frames_for_test(&mut self, capacity: usize, fair: bool) -> frame::StreamMetaVec {
         let buf = &mut Vec::with_capacity(capacity);
         let mut tbuf = crate::connection::TransmitBuf::new(buf, std::num::NonZeroUsize::MIN, 1_200);
         tbuf.start_new_datagram_with_size(capacity);
         let builder = &mut PacketBuilder::simple_data_buf(&mut tbuf);
         let stats = &mut FrameStats::default();
-        self.write_stream_frames(builder, stats);
+        self.write_stream_frames(builder, fair, stats);
         builder.sent_frames().stream_frames.clone()
     }
 
@@ -965,16 +965,12 @@ pub(super) fn get_or_insert_recv(
 mod tests {
     use super::*;
     use crate::{
-        ReadableError, RecvStream, SendStream, TransportConfig, TransportErrorCode, WriteError,
+        ReadableError, RecvStream, SendStream, TransportErrorCode, WriteError,
         connection::State as ConnState, connection::Streams,
     };
     use bytes::Bytes;
 
     fn make(side: Side) -> StreamsState {
-        make_with_fairness(side, TransportConfig::default().send_fairness)
-    }
-
-    fn make_with_fairness(side: Side, send_fairness: bool) -> StreamsState {
         StreamsState::new(
             side,
             128u32.into(),
@@ -982,7 +978,6 @@ mod tests {
             1024 * 1024,
             (1024 * 1024u32).into(),
             (1024 * 1024u32).into(),
-            send_fairness,
         )
     }
 
@@ -995,7 +990,6 @@ mod tests {
             1024 * 1024,
             (1024 * 1024u32).into(),
             (1024 * 1024u32).into(),
-            true,
         );
         let id = StreamId::new(Side::Server, Dir::Uni, 0);
         let initial_max = client.local_max_data;
@@ -1399,7 +1393,7 @@ mod tests {
         high.set_priority(1).unwrap();
         high.write(b"high").unwrap();
 
-        let meta = server.write_frames_for_test(40);
+        let meta = server.write_frames_for_test(40, true);
         assert_eq!(meta[0].id, id_high);
         assert_eq!(meta[1].id, id_mid);
         assert_eq!(meta[2].id, id_low);
@@ -1457,7 +1451,7 @@ mod tests {
         };
         high.set_priority(-1).unwrap();
 
-        let meta = server.write_frames_for_test(40);
+        let meta = server.write_frames_for_test(40, true);
         assert_eq!(meta.len(), 1);
         assert_eq!(meta[0].id, id_high);
 
@@ -1465,7 +1459,7 @@ mod tests {
         assert_eq!(server.pending.len(), 2);
 
         // Send the remaining data. The initial mid priority one should go first now
-        let meta = server.write_frames_for_test(1000 - 40);
+        let meta = server.write_frames_for_test(1000 - 40, true);
         assert_eq!(meta.len(), 2);
         assert_eq!(meta[0].id, id_mid);
         assert_eq!(meta[1].id, id_high);
@@ -1476,13 +1470,8 @@ mod tests {
 
     #[test]
     fn same_stream_priority() {
-        for setting in [None, Some(true), Some(false)] {
-            let mut config = TransportConfig::default();
-            if let Some(fair) = setting {
-                config.send_fairness(fair);
-            }
-            let fair = setting.unwrap_or(true);
-            let mut server = make_with_fairness(Side::Server, config.send_fairness);
+        for fair in [true, false] {
+            let mut server = make(Side::Server);
             server.set_params(&TransportParameters {
                 initial_max_streams_bidi: 3u32.into(),
                 initial_max_data: 300u32.into(),
@@ -1529,7 +1518,7 @@ mod tests {
 
             // loop until all the streams are written
             loop {
-                let meta = server.write_frames_for_test(40);
+                let meta = server.write_frames_for_test(40, fair);
                 if meta.is_empty() {
                     break;
                 }
@@ -1559,8 +1548,8 @@ mod tests {
     }
 
     #[test]
-    fn non_incremental_priority_bump() {
-        let mut server = make_with_fairness(Side::Server, false);
+    fn unfair_priority_bump() {
+        let mut server = make(Side::Server);
         server.set_params(&TransportParameters {
             initial_max_streams_bidi: 3u32.into(),
             initial_max_data: 300u32.into(),
@@ -1598,7 +1587,7 @@ mod tests {
         let mut metas = vec![];
 
         // Write the first chunk of stream_a
-        let meta = server.write_frames_for_test(40);
+        let meta = server.write_frames_for_test(40, false);
         assert!(!meta.is_empty());
         metas.extend(meta);
 
@@ -1614,7 +1603,7 @@ mod tests {
 
         // loop until all the streams are written
         loop {
-            let meta = server.write_frames_for_test(40);
+            let meta = server.write_frames_for_test(40, false);
             if meta.is_empty() {
                 break;
             }
@@ -1627,8 +1616,9 @@ mod tests {
         let stream_ids = metas.iter().map(|m| m.id).collect::<Vec<_>>();
         assert_eq!(
             stream_ids,
-            // Higher-priority stream_c preempts the partly written non-incremental stream_a.
-            vec![id_a, id_c, id_c, id_c, id_a, id_a, id_b, id_b, id_b]
+            // stream_c bumps stream_b but doesn't bump stream_a which had already been partly
+            // written out
+            vec![id_a, id_a, id_a, id_c, id_c, id_c, id_b, id_b, id_b]
         );
     }
 
@@ -1892,7 +1882,7 @@ mod tests {
 
     #[test]
     fn lazy_remote_allocation_starts_empty() {
-        // Stream state must not pre-populate `send`/`recv` with placeholder slots.
+        // `StreamsState::new` must not pre-populate `send`/`recv` with placeholder slots.
         let client = StreamsState::new(
             Side::Client,
             10_000u32.into(),
@@ -1900,7 +1890,6 @@ mod tests {
             1024 * 1024,
             (1024 * 1024u32).into(),
             (1024 * 1024u32).into(),
-            true,
         );
         // No slots allocated until a stream is actually received.
         assert!(client.recv.is_empty());
