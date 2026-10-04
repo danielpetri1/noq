@@ -476,6 +476,7 @@ struct PendingStream {
     priority: i32,
 
     /// Controls whether the stream is fairly multiplexed with others at the same urgency level.
+    // Note that the global "send_fairness" config currently overrides the incremental flag
     incremental: bool,
 
     /// Round-robin ordering for incremental streams of the same priority.

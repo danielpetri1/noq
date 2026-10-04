@@ -522,6 +522,7 @@ impl StreamsState {
     pub(in crate::connection) fn write_stream_frames<'a, 'b>(
         &mut self,
         builder: &mut PacketBuilder<'a, 'b>,
+        fair: bool,
         stats: &mut FrameStats,
     ) {
         while builder.frame_space_remaining() > frame::Stream::SIZE_BOUND {
@@ -562,7 +563,7 @@ impl StreamsState {
                 // the incremental case, so that the other streams will have a chance to write data
                 // before we touch this stream again.
                 self.pending
-                    .push_pending(id, stream.priority, stream.incremental);
+                    .push_pending(id, stream.priority, stream.incremental || fair);
             }
 
             let range = offsets.clone();
