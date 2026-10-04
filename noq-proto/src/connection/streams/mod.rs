@@ -1,8 +1,9 @@
 use std::{
+    cmp::Ordering,
     collections::{BinaryHeap, hash_map},
     io,
 };
-use std::cmp::Ordering;
+
 use bytes::Bytes;
 use thiserror::Error;
 use tracing::trace;
@@ -414,12 +415,21 @@ impl<'a> SendStream<'a> {
 struct PendingStreamsQueue {
     streams: BinaryHeap<PendingStream>,
     /// Treat all queued streams as incremental, regardless of their individual flags.
-    // This is to avoid breaking the old behavior 
+    // This flag avoids breaking the old behavior and should be treated as deprecated
     send_fairness: bool,
     /// A decreasing `u64` counter, separate from the signed stream priority, used to implement
     /// round-robin scheduling for incremental streams of the same priority. It starts at
     /// `u64::MAX` and decreases once per incremental insertion, so underflow is impractical.
     recency: u64,
+}
+
+impl Default for PendingStreamsQueue {
+    // The default here is set to false so that we can have the more granular scheduling
+    // outlined in RFC 9218. For backward compatibility, instantiations preserve ::new(true) across
+    // the codebase, effectively marking all streams as incremental.
+    fn default() -> Self {
+        Self::new(false)
+    }
 }
 
 impl PendingStreamsQueue {

@@ -40,7 +40,6 @@ fuzz_target!(|input: (StreamParams, Vec<Operation>)| {
         params.send_window.into(),
         params.receive_window.into(),
         params.stream_receive_window.into(),
-        true,
     );
 
     for operation in operations {

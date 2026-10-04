@@ -150,7 +150,6 @@ impl StreamsState {
         send_window: u64,
         receive_window: VarInt,
         stream_receive_window: VarInt,
-        send_fairness: bool,
     ) -> Self {
         Self {
             side,
@@ -168,7 +167,7 @@ impl StreamsState {
             opened: [false, false],
             next_reported_remote: [0, 0],
             send_streams: 0,
-            pending: PendingStreamsQueue::new(send_fairness),
+            pending: PendingStreamsQueue::default(),
             events: VecDeque::new(),
             connection_blocked: Vec::new(),
             max_data: 0,
@@ -1893,7 +1892,7 @@ mod tests {
 
     #[test]
     fn lazy_remote_allocation_starts_empty() {
-        // `StreamsState::new` must not pre-populate `send`/`recv` with placeholder slots.
+        // Stream state must not pre-populate `send`/`recv` with placeholder slots.
         let client = StreamsState::new(
             Side::Client,
             10_000u32.into(),
