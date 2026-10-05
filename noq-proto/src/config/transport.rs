@@ -154,10 +154,9 @@ impl TransportConfig {
         self
     }
 
-    /// Has no effect. Equal-priority send streams are always scheduled round-robin.
-    #[deprecated(
-        note = "Send fairness is now always enabled. Neither enabling nor disabling it has no effect."
-    )]
+    /// Has no effect. Equal-priority send streams are scheduled round-robin by default.
+    /// A stream can be marked as as non-incremental to prevent interleaving.
+    #[deprecated(note = "Use the stream-specific `set_incremental(bool)` method instead")]
     pub fn send_fairness(&mut self, _value: bool) -> &mut Self {
         self
     }

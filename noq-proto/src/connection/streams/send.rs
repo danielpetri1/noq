@@ -13,6 +13,7 @@ pub(super) struct Send {
     pub(super) state: SendState,
     pub(super) pending: SendBuffer,
     pub(super) priority: i32,
+    pub(super) incremental: bool,
     /// Whether a frame containing a FIN bit must be transmitted.
     ///
     /// Even if we don't have any new data.
@@ -30,6 +31,9 @@ impl Send {
             state: SendState::Ready,
             pending: SendBuffer::new(),
             priority: 0,
+            incremental: true, /* intentionally deviates from RFC 9218 for
+                                * backward-compatibility. Should be set to false once
+                                * send_fairness(bool) is deprecated. */
             fin_pending: false,
             connection_blocked: false,
             stop_reason: None,

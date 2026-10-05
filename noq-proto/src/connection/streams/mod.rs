@@ -1,4 +1,5 @@
 use std::{
+    cmp::Ordering,
     collections::{BinaryHeap, hash_map},
     io,
 };
@@ -308,7 +309,9 @@ impl<'a> SendStream<'a> {
         self.state.unacked_data += written.bytes as u64;
         trace!(stream = %self.id, "wrote {} bytes", written.bytes);
         if !was_pending {
-            self.state.pending.push_pending(self.id, stream.priority);
+            self.state
+                .pending
+                .push_pending(self.id, stream.priority, stream.incremental);
         }
         Ok(written)
     }
@@ -339,7 +342,9 @@ impl<'a> SendStream<'a> {
         let was_pending = stream.is_pending();
         stream.finish()?;
         if !was_pending {
-            self.state.pending.push_pending(self.id, stream.priority);
+            self.state
+                .pending
+                .push_pending(self.id, stream.priority, stream.incremental);
         }
 
         Ok(())
@@ -431,10 +436,14 @@ impl PendingStreamsQueue {
         // This is enough to implement round-robin scheduling for streams that are still pending
         // even after being handled, as in that case they are removed from the `BinaryHeap`,
         // handled, and then immediately reinserted.
-        self.recency -= 1;
+        if incremental {
+            self.recency -= 1;
+        }
+
         self.streams.push(PendingStream {
             priority,
-            recency: self.recency,
+            incremental,
+            recency: if incremental { self.recency } else { u64::MAX },
             id,
         });
     }
@@ -458,12 +467,13 @@ impl PendingStreamsQueue {
 }
 
 /// The [`StreamId`] of a stream with pending data queued, ordered by its priority and recency
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, PartialEq, Eq)]
 struct PendingStream {
     /// The priority of the stream
-    // Note that this field should be kept above the `recency` field, in order for the `Ord` derive
-    // to be correct (See https://doc.rust-lang.org/stable/std/cmp/trait.Ord.html#derivable)
     priority: i32,
+    /// Controls whether the stream is fairly multiplexed with others at the same urgency level.
+    // Note that the connection-wide `send_fairness(false)` config overrides the incremental flag
+    incremental: bool,
     /// A tie-breaker for streams of the same priority, used to improve fairness by implementing
     /// round-robin scheduling: Larger values are prioritized, so it is initialised to
     /// `u64::MAX`, and when a stream writes data, we know that it currently has the highest
@@ -471,11 +481,24 @@ struct PendingStream {
     /// previous lowest recency value, such that all other streams of this priority will get
     /// processed once before we get back round to this one
     recency: u64,
-    /// The ID of the stream
-    // The way this type is used ensures that every instance has a unique `recency` value, so this
-    // field should be kept below the `priority` and `recency` fields, so that it does not
-    // interfere with the behaviour of the `Ord` derive
+    /// The ID of the stream. Lower non-incremental IDs are scheduled first.
     id: StreamId,
+}
+
+impl Ord for PendingStream {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.priority
+            .cmp(&other.priority) // Higher urgency first
+            .then_with(|| other.incremental.cmp(&self.incremental)) // i=false first
+            .then_with(|| self.recency.cmp(&other.recency)) // round-robin when i=true
+            .then_with(|| other.id.cmp(&self.id)) // lower stream ID first, when non-incremental
+    }
+}
+
+impl PartialOrd for PendingStream {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 /// Application events about streams
