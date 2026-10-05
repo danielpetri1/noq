@@ -239,6 +239,22 @@ impl SendStream {
         conn.inner.send_stream(self.stream).priority()
     }
 
+    /// Set the incrementality of the send stream.
+    /// Note that `send_fairness(false)` overrides incremental scheduling.
+    pub fn set_incremental(&self, incremental: bool) -> Result<(), ClosedStream> {
+        let mut conn = self.conn.lock_without_waking("SendStream::set_incremental");
+        conn.inner
+            .send_stream(self.stream)
+            .set_incremental(incremental)?;
+        Ok(())
+    }
+
+    /// Get the incrementality of the send stream
+    pub fn incremental(&self) -> Result<bool, ClosedStream> {
+        let mut conn = self.conn.lock_without_waking("SendStream::incremental");
+        conn.inner.send_stream(self.stream).incremental()
+    }
+
     /// Completes when the peer stops the stream or reads the stream to completion
     ///
     /// Yields `Some` with the stop error code if the peer stops the stream. Yields `None` if the

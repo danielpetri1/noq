@@ -396,6 +396,23 @@ impl<'a> SendStream<'a> {
         Ok(())
     }
 
+    /// Set the incrementality of a stream
+    ///
+    /// # Panics
+    /// - when applied to a receive stream
+    pub fn set_incremental(&mut self, incremental: bool) -> Result<(), ClosedStream> {
+        let max_send_data = self.state.max_send_data(self.id);
+        let stream = self
+            .state
+            .send
+            .get_mut(&self.id)
+            .map(get_or_insert_send(max_send_data))
+            .ok_or(ClosedStream { _private: () })?;
+
+        stream.incremental = incremental;
+        Ok(())
+    }
+
     /// Get the priority of a stream
     ///
     /// # Panics
@@ -408,6 +425,22 @@ impl<'a> SendStream<'a> {
             .ok_or(ClosedStream { _private: () })?;
 
         Ok(stream.as_ref().map(|s| s.priority).unwrap_or_default())
+    }
+
+    /// Get the incrementality of a stream
+    ///
+    /// # Panics
+    /// - when applied to a receive stream
+    pub fn incremental(&self) -> Result<bool, ClosedStream> {
+        let stream = self
+            .state
+            .send
+            .get(&self.id)
+            .ok_or(ClosedStream { _private: () })?;
+
+        // Intentionally deviates from RFC 9218 for backward-compatibility.
+        // The default should be set to false once send_fairness(bool) is deprecated.
+        Ok(stream.as_ref().map(|s| s.incremental).unwrap_or(true))
     }
 }
 
