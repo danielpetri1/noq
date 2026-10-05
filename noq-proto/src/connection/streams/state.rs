@@ -564,7 +564,8 @@ impl StreamsState {
                 // will have a chance to write data before we touch this stream
                 // again.
                 if fair {
-                    self.pending.push_pending(id, stream.priority);
+                    self.pending
+                        .push_pending(id, stream.priority, stream.incremental);
                 } else {
                     self.pending.reinsert_pending(id, stream.priority);
                 }
@@ -624,7 +625,8 @@ impl StreamsState {
             return;
         };
         if !stream.is_pending() {
-            self.pending.push_pending(frame.id, stream.priority);
+            self.pending
+                .push_pending(frame.id, stream.priority, stream.incremental);
         }
         stream.fin_pending |= frame.fin;
         stream.pending.retransmit(frame.offsets);
@@ -643,7 +645,8 @@ impl StreamsState {
                     continue;
                 }
                 if !stream.is_pending() {
-                    self.pending.push_pending(id, stream.priority);
+                    self.pending
+                        .push_pending(id, stream.priority, stream.incremental);
                 }
                 stream.pending.retransmit_all_for_0rtt();
             }

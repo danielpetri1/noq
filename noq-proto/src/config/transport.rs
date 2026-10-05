@@ -163,6 +163,7 @@ impl TransportConfig {
     ///
     /// Disabling fairness can reduce fragmentation and protocol overhead for workloads that use
     /// many small streams.
+    #[deprecated(note = "Favor the stream-specific `set_incremental(bool)` method instead")]
     pub fn send_fairness(&mut self, value: bool) -> &mut Self {
         self.send_fairness = value;
         self
