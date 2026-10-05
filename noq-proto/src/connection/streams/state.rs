@@ -1629,6 +1629,119 @@ mod tests {
     }
 
     #[test]
+    fn fair_scheduling_with_strict_priority() {
+        let mut server = make(Side::Server);
+        server.set_params(&TransportParameters {
+            initial_max_streams_bidi: 6u32.into(),
+            initial_max_data: 600u32.into(),
+            initial_max_stream_data_bidi_remote: 600u32.into(),
+            ..TransportParameters::default()
+        });
+
+        let (mut pending, state) = (Retransmits::default(), ConnState::established());
+        let mut streams = Streams {
+            state: &mut server,
+            conn_state: &state,
+        };
+
+        // a, b, c, and d have the same urgency
+        // e has the highest urgency; f the lowest
+        // c, d, and e are non-incremental
+        let id_a = streams.open(Dir::Bi).unwrap();
+        let id_b = streams.open(Dir::Bi).unwrap();
+        let id_c = streams.open(Dir::Bi).unwrap();
+        let id_d = streams.open(Dir::Bi).unwrap();
+        let id_e = streams.open(Dir::Bi).unwrap();
+        let id_f = streams.open(Dir::Bi).unwrap();
+
+        let mut stream_a = SendStream {
+            id: id_a,
+            state: &mut server,
+            pending: &mut pending,
+            conn_state: &state,
+        };
+        stream_a.set_priority(0).unwrap();
+        stream_a.set_incremental(true).unwrap();
+        stream_a.write(&[b'a'; 100]).unwrap();
+
+        let mut stream_b = SendStream {
+            id: id_b,
+            state: &mut server,
+            pending: &mut pending,
+            conn_state: &state,
+        };
+        stream_b.set_priority(0).unwrap();
+        stream_b.set_incremental(true).unwrap();
+        stream_b.write(&[b'b'; 100]).unwrap();
+
+        let mut stream_c = SendStream {
+            id: id_c,
+            state: &mut server,
+            pending: &mut pending,
+            conn_state: &state,
+        };
+        stream_c.set_priority(0).unwrap();
+        stream_c.set_incremental(false).unwrap();
+        stream_c.write(&[b'c'; 100]).unwrap();
+
+        let mut stream_d = SendStream {
+            id: id_d,
+            state: &mut server,
+            pending: &mut pending,
+            conn_state: &state,
+        };
+        stream_d.set_priority(0).unwrap();
+        stream_d.set_incremental(false).unwrap();
+        stream_d.write(&[b'd'; 100]).unwrap();
+
+        let mut stream_e = SendStream {
+            id: id_e,
+            state: &mut server,
+            pending: &mut pending,
+            conn_state: &state,
+        };
+        // Mark stream e as non-incremental with the highest priority
+        stream_e.set_priority(i32::MAX).unwrap();
+        stream_e.set_incremental(false).unwrap();
+        stream_e.write(&[b'e'; 100]).unwrap();
+
+        let mut stream_f = SendStream {
+            id: id_f,
+            state: &mut server,
+            pending: &mut pending,
+            conn_state: &state,
+        };
+        stream_f.set_priority(i32::MIN).unwrap();
+        stream_f.set_incremental(true).unwrap();
+        stream_f.write(&[b'f'; 100]).unwrap();
+
+        let mut metas = vec![];
+
+        // loop until all the streams are written
+        loop {
+            let meta = server.write_frames_for_test(40, true);
+            if meta.is_empty() {
+                break;
+            }
+            metas.extend(meta);
+        }
+
+        assert!(!server.can_send_stream_data());
+        assert_eq!(server.pending.len(), 0);
+
+        let stream_ids = metas.iter().map(|m| m.id).collect::<Vec<_>>();
+        assert_eq!(
+            stream_ids,
+            vec![
+                id_e, id_e, id_e, // non-incremental before incremental, highest urgency
+                id_c, id_c, id_c, id_d, id_d, id_d, // non-incremental tie sorts by stream ID
+                id_a, id_b, id_a, id_b, id_a, id_b, // incremental, round-robin scheduling
+                id_f, id_f, id_f // incremental, scheduled alone due to lowest priority
+            ]
+        );
+    }
+
+    #[test]
     fn stop_finished() {
         let mut client = make(Side::Client);
         let id = StreamId::new(Side::Server, Dir::Uni, 0);
