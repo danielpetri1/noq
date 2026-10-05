@@ -1632,9 +1632,9 @@ mod tests {
     fn fair_scheduling_with_strict_priority() {
         let mut server = make(Side::Server);
         server.set_params(&TransportParameters {
-            initial_max_streams_bidi: 6u32.into(),
-            initial_max_data: 600u32.into(),
-            initial_max_stream_data_bidi_remote: 600u32.into(),
+            initial_max_streams_bidi: 7u32.into(),
+            initial_max_data: 700u32.into(),
+            initial_max_stream_data_bidi_remote: 700u32.into(),
             ..TransportParameters::default()
         });
 
@@ -1644,8 +1644,8 @@ mod tests {
             conn_state: &state,
         };
 
-        // a, b, c, and d have the same urgency
-        // e has the highest urgency; f the lowest
+        // a, b, c, and d have the default urgency
+        // e, f have the highest urgency; g the lowest
         // c, d, and e are non-incremental
         let id_a = streams.open(Dir::Bi).unwrap();
         let id_b = streams.open(Dir::Bi).unwrap();
@@ -1653,6 +1653,7 @@ mod tests {
         let id_d = streams.open(Dir::Bi).unwrap();
         let id_e = streams.open(Dir::Bi).unwrap();
         let id_f = streams.open(Dir::Bi).unwrap();
+        let id_g = streams.open(Dir::Bi).unwrap();
 
         let mut stream_a = SendStream {
             id: id_a,
@@ -1674,16 +1675,6 @@ mod tests {
         stream_b.set_incremental(true).unwrap();
         stream_b.write(&[b'b'; 100]).unwrap();
 
-        let mut stream_c = SendStream {
-            id: id_c,
-            state: &mut server,
-            pending: &mut pending,
-            conn_state: &state,
-        };
-        stream_c.set_priority(0).unwrap();
-        stream_c.set_incremental(false).unwrap();
-        stream_c.write(&[b'c'; 100]).unwrap();
-
         let mut stream_d = SendStream {
             id: id_d,
             state: &mut server,
@@ -1693,6 +1684,17 @@ mod tests {
         stream_d.set_priority(0).unwrap();
         stream_d.set_incremental(false).unwrap();
         stream_d.write(&[b'd'; 100]).unwrap();
+
+        // Write to C *after* D to test stream ID order rather than write order.
+        let mut stream_c = SendStream {
+            id: id_c,
+            state: &mut server,
+            pending: &mut pending,
+            conn_state: &state,
+        };
+        stream_c.set_priority(0).unwrap();
+        stream_c.set_incremental(false).unwrap();
+        stream_c.write(&[b'c'; 100]).unwrap();
 
         let mut stream_e = SendStream {
             id: id_e,
@@ -1711,9 +1713,19 @@ mod tests {
             pending: &mut pending,
             conn_state: &state,
         };
-        stream_f.set_priority(i32::MIN).unwrap();
+        stream_f.set_priority(i32::MAX).unwrap();
         stream_f.set_incremental(true).unwrap();
         stream_f.write(&[b'f'; 100]).unwrap();
+
+        let mut stream_g = SendStream {
+            id: id_g,
+            state: &mut server,
+            pending: &mut pending,
+            conn_state: &state,
+        };
+        stream_g.set_priority(i32::MIN).unwrap();
+        stream_g.set_incremental(true).unwrap();
+        stream_g.write(&[b'g'; 100]).unwrap();
 
         let mut metas = vec![];
 
@@ -1734,9 +1746,11 @@ mod tests {
             stream_ids,
             vec![
                 id_e, id_e, id_e, // non-incremental before incremental, highest urgency
+                id_f, id_f,
+                id_f, // high-prio incremental sends before low-prio non-incremental
                 id_c, id_c, id_c, id_d, id_d, id_d, // non-incremental tie sorts by stream ID
                 id_a, id_b, id_a, id_b, id_a, id_b, // incremental, round-robin scheduling
-                id_f, id_f, id_f // incremental, scheduled alone due to lowest priority
+                id_g, id_g, id_g // incremental, scheduled alone due to lowest priority
             ]
         );
     }
