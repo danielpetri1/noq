@@ -438,8 +438,6 @@ impl<'a> SendStream<'a> {
             .get(&self.id)
             .ok_or(ClosedStream { _private: () })?;
 
-        // Intentionally deviates from RFC 9218 for backward-compatibility.
-        // The default should be set to false once send_fairness(bool) is deprecated.
         Ok(stream.as_ref().map(|s| s.incremental).unwrap_or(true))
     }
 }
@@ -461,9 +459,8 @@ impl PendingStreamsQueue {
         }
     }
 
-    /// Push a pending stream ID with the given priority, queued after any already-queued streams
-    /// for the priority
-    fn push_pending(&mut self, id: StreamId, priority: i32) {
+    /// Push a pending stream ID with the given priority and incremental value
+    fn push_pending(&mut self, id: StreamId, priority: i32, incremental: bool) {
         // As the recency counter is monotonically decreasing, we know that using its value to sort
         // this stream will queue it after all other queued streams of the same priority.
         // This is enough to implement round-robin scheduling for streams that are still pending
@@ -505,7 +502,6 @@ struct PendingStream {
     /// The priority of the stream
     priority: i32,
     /// Controls whether the stream is fairly multiplexed with others at the same urgency level.
-    // Note that the connection-wide `send_fairness(false)` config overrides the incremental flag
     incremental: bool,
     /// A tie-breaker for streams of the same priority, used to improve fairness by implementing
     /// round-robin scheduling: Larger values are prioritized, so it is initialised to
