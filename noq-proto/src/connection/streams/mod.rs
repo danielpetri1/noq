@@ -283,12 +283,13 @@ impl<'a> SendStream<'a> {
         let limit = self.state.write_limit();
 
         let max_send_data = self.state.max_send_data(self.id);
+        let default_incremental = self.state.default_incremental;
 
         let stream = self
             .state
             .send
             .get_mut(&self.id)
-            .map(get_or_insert_send(max_send_data))
+            .map(get_or_insert_send(max_send_data, default_incremental))
             .ok_or(WriteError::ClosedStream)?;
 
         if limit == 0 {
@@ -332,11 +333,12 @@ impl<'a> SendStream<'a> {
     /// [`StreamEvent::Finished`]: crate::StreamEvent::Finished
     pub fn finish(&mut self) -> Result<(), FinishError> {
         let max_send_data = self.state.max_send_data(self.id);
+        let default_incremental = self.state.default_incremental;
         let stream = self
             .state
             .send
             .get_mut(&self.id)
-            .map(get_or_insert_send(max_send_data))
+            .map(get_or_insert_send(max_send_data, default_incremental))
             .ok_or(FinishError::ClosedStream)?;
 
         let was_pending = stream.is_pending();
@@ -356,11 +358,12 @@ impl<'a> SendStream<'a> {
     /// - when applied to a receive stream
     pub fn reset(&mut self, error_code: VarInt) -> Result<(), ClosedStream> {
         let max_send_data = self.state.max_send_data(self.id);
+        let default_incremental = self.state.default_incremental;
         let stream = self
             .state
             .send
             .get_mut(&self.id)
-            .map(get_or_insert_send(max_send_data))
+            .map(get_or_insert_send(max_send_data, default_incremental))
             .ok_or(ClosedStream { _private: () })?;
 
         if matches!(stream.state, SendState::ResetSent) {
@@ -385,11 +388,12 @@ impl<'a> SendStream<'a> {
     /// - when applied to a receive stream
     pub fn set_priority(&mut self, priority: i32) -> Result<(), ClosedStream> {
         let max_send_data = self.state.max_send_data(self.id);
+        let default_incremental = self.state.default_incremental;
         let stream = self
             .state
             .send
             .get_mut(&self.id)
-            .map(get_or_insert_send(max_send_data))
+            .map(get_or_insert_send(max_send_data, default_incremental))
             .ok_or(ClosedStream { _private: () })?;
 
         stream.priority = priority;
@@ -406,7 +410,7 @@ impl<'a> SendStream<'a> {
             .state
             .send
             .get_mut(&self.id)
-            .map(get_or_insert_send(max_send_data))
+            .map(get_or_insert_send(max_send_data, incremental))
             .ok_or(ClosedStream { _private: () })?;
 
         stream.incremental = incremental;
@@ -438,7 +442,10 @@ impl<'a> SendStream<'a> {
             .get(&self.id)
             .ok_or(ClosedStream { _private: () })?;
 
-        Ok(stream.as_ref().map(|s| s.incremental).unwrap_or(true))
+        Ok(stream
+            .as_ref()
+            .map(|s| s.incremental)
+            .unwrap_or(self.state.default_incremental))
     }
 }
 
