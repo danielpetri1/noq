@@ -1748,7 +1748,7 @@ mod tests {
         let stream_ids = metas.iter().map(|m| m.id).collect::<Vec<_>>();
         assert_eq!(
             stream_ids,
-            // verify that stream_c bumps stream_a which had already been partly written out
+            // stream_c bumps stream_a which had already been partly written out
             // when stream_c completes, resume stream_a since its stream_id is lower
             vec![id_a, id_c, id_c, id_c, id_a, id_a, id_b, id_b, id_b]
         );
