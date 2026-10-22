@@ -158,6 +158,7 @@ impl TransportConfig {
     }
 
     /// Controls whether streams at the same urgency level should be interleaved by default.
+    ///
     /// Defaults to `true`. Explicitly setting the stream's incremental value via
     /// [`SendStream::set_incremental`](crate::SendStream::set_incremental) takes precedence.
     pub fn send_fairness(&mut self, default_incremental: bool) -> &mut Self {

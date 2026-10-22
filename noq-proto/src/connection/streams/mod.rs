@@ -398,7 +398,15 @@ impl<'a> SendStream<'a> {
         Ok(())
     }
 
-    /// Set the incrementality of a stream
+    /// Sets the incrementality of the send stream.
+    ///
+    /// Incremental streams with the same priority are fairly multiplexed in a round-robin manner,
+    /// while non-incremental streams are scheduled without interleaving. Non-incremental streams
+    /// are sent before incremental ones when the priority is tied. Among non-incremental streams,
+    /// lower stream IDs are favored. The default incremental value (`true`) can be changed with
+    /// [`TransportConfig::send_fairness`](crate::TransportConfig::send_fairness). Changing the
+    /// incrementality of a stream with pending data may only take effect after that data has been
+    /// transmitted.
     ///
     /// # Panics
     /// - when applied to a receive stream
@@ -429,7 +437,7 @@ impl<'a> SendStream<'a> {
         Ok(stream.as_ref().map(|s| s.priority).unwrap_or_default())
     }
 
-    /// Get the incrementality of a stream
+    /// Returns whether the send stream is incremental.
     ///
     /// # Panics
     /// - when applied to a receive stream

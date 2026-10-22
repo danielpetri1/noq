@@ -239,15 +239,15 @@ impl SendStream {
         conn.inner.send_stream(self.stream).priority()
     }
 
-    /// Set the incrementality of the send stream. Incremental streams at the same level of urgency
-    /// are multiplexed in a round-robin manner, preventing starvation. Non-incremental streams are
-    /// scheduled before incremental ones without interleaving, reducing fragmentation and
-    /// protocol overhead for for workloads that use many small streams. Ties in the
-    /// non-incremental case are broken by favoring lower stream IDs.
-    /// The default incremental value (`true`) can be changed with
+    /// Sets the incrementality of the send stream.
+    ///
+    /// Incremental streams with the same priority are fairly multiplexed in a round-robin manner,
+    /// while non-incremental streams are scheduled without interleaving. Non-incremental streams
+    /// are sent before incremental ones when the priority is tied. Among non-incremental streams,
+    /// lower stream IDs are favored. The default incremental value (`true`) can be changed with
     /// [`TransportConfig::send_fairness`](crate::TransportConfig::send_fairness). Changing the
-    /// incrementality of a stream with pending data may only take effect after that
-    /// data has been transmitted.
+    /// incrementality of a stream with pending data may only take effect after that data has been
+    /// transmitted.
     pub fn set_incremental(&self, incremental: bool) -> Result<(), ClosedStream> {
         let mut conn = self.conn.lock_without_waking("SendStream::set_incremental");
         conn.inner
@@ -256,7 +256,7 @@ impl SendStream {
         Ok(())
     }
 
-    /// Get the incrementality of the send stream
+    /// Returns whether the send stream is incremental.
     pub fn incremental(&self) -> Result<bool, ClosedStream> {
         let mut conn = self.conn.lock_without_waking("SendStream::incremental");
         conn.inner.send_stream(self.stream).incremental()
