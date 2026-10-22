@@ -1,6 +1,6 @@
 use alloc::collections::BinaryHeap;
-use std::{cmp, io};
-use cmp::Ordering;
+use std::io;
+use core::cmp::Ordering;
 
 use bytes::Bytes;
 use thiserror::Error;
