@@ -8,8 +8,8 @@ use super::{
     StreamHalf,
 };
 use crate::{
-    Dir, FxHashMap, MAX_STREAM_COUNT, Side, StreamId, TransportError, VarInt,
-    connection::{PacketBuilder, stats::FrameStats},
+    Dir, FxHashMap, MAX_STREAM_COUNT, PathId, Side, StreamId, TransportError, VarInt,
+    connection::{PacketBuilder, paths::PathIdKey, stats::FrameStats},
     frame::{self, FrameStruct},
     hash_map,
     transport_parameters::TransportParameters,
@@ -392,14 +392,32 @@ impl StreamsState {
         }
     }
 
-    /// Whether any stream data is queued, regardless of control frames
-    pub(crate) fn can_send_stream_data(&self) -> bool {
-        // Reset streams may linger in the pending stream list, but will never produce stream frames
-        self.pending.iter().any(|stream| {
+    /// Whether sticky-to-this-path stream data is pending, excluding control frames.
+    pub(crate) fn can_send_sticky_stream_data(&self, path: PathId) -> bool {
+        self.pending
+            .sticky
+            .get(&PathIdKey(path))
+            .is_some_and(|heap| {
+                heap.iter().any(|pending| {
+                    // Empty writes and late ACKs can leave entries without pending
+                    // work; loss recovery can requeue reset streams.
+                    self.send
+                        .get(&pending.id)
+                        .and_then(|s| s.as_ref())
+                        .is_some_and(|stream| !stream.is_reset() && stream.is_pending())
+                })
+            })
+    }
+
+    /// Whether non-path-sticky stream data is pending, excluding control frames.
+    pub(crate) fn can_send_any_stream_data(&self) -> bool {
+        self.pending.any.iter().any(|pending| {
+            // Empty writes and late ACKs can leave entries without pending work; loss
+            // recovery can requeue reset streams.
             self.send
-                .get(&stream.id)
+                .get(&pending.id)
                 .and_then(|s| s.as_ref())
-                .is_some_and(|s| !s.is_reset())
+                .is_some_and(|stream| !stream.is_reset() && stream.is_pending())
         })
     }
 
@@ -525,26 +543,27 @@ impl StreamsState {
         &mut self,
         builder: &mut PacketBuilder<'a, 'b>,
         stats: &mut FrameStats,
+        path: PathId,
+        include_affinity_any: bool,
     ) {
         while builder.frame_space_remaining() > frame::Stream::SIZE_BOUND {
             // Pop the stream of the highest priority that currently has pending data. If
             // the stream still has some pending data left after writing, it will be
             // reinserted, otherwise not
-            let Some(stream) = self.pending.pop() else {
+            let Some(pending) = self.pending.pop(path, include_affinity_any) else {
                 break;
             };
 
-            let id = stream.id;
+            let id = pending.id;
 
             let Some(stream) = self.send.get_mut(&id).and_then(|s| s.as_mut()) else {
                 // Stream was reset with pending data and the reset was acknowledged
                 continue;
             };
 
-            // Reset streams aren't removed from the pending list and still exist while the peer
-            // hasn't acknowledged the reset, but should not generate STREAM frames, so we need to
-            // check for them explicitly.
-            if stream.is_reset() {
+            // Loss recovery can requeue reset streams. Empty writes or late ACKs can leave
+            // queued streams with no pending data or FIN.
+            if stream.is_reset() || !stream.is_pending() {
                 continue;
             }
 
@@ -564,7 +583,7 @@ impl StreamsState {
                 // with round-robin scheduling, so that the other streams will have a chance to
                 // write data before we touch this stream again.
                 self.pending
-                    .push_pending(id, stream.priority, stream.incremental);
+                    .push_pending(id, stream.priority, stream.incremental, stream.affinity);
             }
 
             let range = offsets.clone();
@@ -582,7 +601,7 @@ impl StreamsState {
         tbuf.start_new_datagram_with_size(capacity);
         let builder = &mut PacketBuilder::simple_data_buf(&mut tbuf);
         let stats = &mut FrameStats::default();
-        self.write_stream_frames(builder, stats);
+        self.write_stream_frames(builder, stats, PathId::ZERO, true);
         builder.sent_frames().stream_frames.clone()
     }
 
@@ -606,11 +625,15 @@ impl StreamsState {
         }
         let id = frame.id;
         self.unacked_data -= frame.offsets.end - frame.offsets.start;
+        let was_pending = stream.is_pending();
         if !stream.ack(frame) {
             // The stream is unfinished or may still need retransmits
             return;
         }
 
+        if was_pending {
+            self.pending.remove(id);
+        }
         entry.remove_entry();
         self.stream_freed(id, StreamHalf::Send);
         self.events.push_back(StreamEvent::Finished { id });
@@ -622,8 +645,12 @@ impl StreamsState {
             return;
         };
         if !stream.is_pending() {
-            self.pending
-                .push_pending(frame.id, stream.priority, stream.incremental);
+            self.pending.push_pending(
+                frame.id,
+                stream.priority,
+                stream.incremental,
+                stream.affinity,
+            );
         }
         stream.fin_pending |= frame.fin;
         stream.pending.retransmit(frame.offsets);
@@ -642,8 +669,12 @@ impl StreamsState {
                     continue;
                 }
                 if !stream.is_pending() {
-                    self.pending
-                        .push_pending(id, stream.priority, stream.incremental);
+                    self.pending.push_pending(
+                        id,
+                        stream.priority,
+                        stream.incremental,
+                        stream.affinity,
+                    );
                 }
                 stream.pending.retransmit_all_for_0rtt();
             }
@@ -1481,7 +1512,101 @@ mod tests {
         assert_eq!(meta[1].id, id_mid);
         assert_eq!(meta[2].id, id_low);
 
-        assert!(!server.can_send_stream_data());
+        assert!(!server.can_send_any_stream_data());
+        assert_eq!(server.pending.len(), 0);
+    }
+
+    #[test]
+    fn affinity_queues_share_priority_and_recency() {
+        use crate::StreamAffinity::{Any, Sticky};
+
+        let mut queue = PendingStreamsQueue::new();
+        let ids = [0, 1, 2, 3].map(|i| StreamId::new(Side::Client, Dir::Uni, i));
+        let path = PathId::ZERO;
+        queue.push_pending(ids[0], 0, true, Any);
+        queue.push_pending(ids[1], 0, true, Sticky(path));
+        queue.push_pending(ids[2], 0, true, Sticky(path));
+        queue.push_pending(ids[3], 1, true, Sticky(path));
+        assert_eq!(queue.pop(path, true).unwrap().id, ids[3]);
+
+        // One Any stream and two sticky streams get equal turns, not equal bucket shares.
+        for _ in 0..2 {
+            for (id, affinity) in [
+                (ids[0], Any),
+                (ids[1], Sticky(path)),
+                (ids[2], Sticky(path)),
+            ] {
+                assert_eq!(queue.pop(path, true).unwrap().id, id);
+                queue.push_pending(id, 0, true, affinity);
+            }
+        }
+
+        // Moving a queued stream keeps its turn relative to streams in the destination bucket.
+        queue.move_pending(ids[0], Some(path));
+        for id in &ids[..3] {
+            assert_eq!(queue.pop(path, true).unwrap().id, *id);
+        }
+        assert_eq!(queue.len(), 0);
+        assert!(queue.sticky.is_empty());
+    }
+
+    #[test]
+    fn unblocking_requeues_after_eligible_streams() {
+        let mut server = make(Side::Server);
+        server.set_params(&TransportParameters {
+            initial_max_streams_bidi: 2u32.into(),
+            initial_max_data: 1000u32.into(),
+            initial_max_stream_data_bidi_remote: 1000u32.into(),
+            ..TransportParameters::default()
+        });
+        let (mut pending, state) = (Retransmits::default(), ConnState::established());
+        let mut streams = Streams {
+            state: &mut server,
+            conn_state: &state,
+        };
+        let first = streams.open(Dir::Bi).unwrap();
+        let second = streams.open(Dir::Bi).unwrap();
+        for id in [first, second] {
+            SendStream {
+                id,
+                state: &mut server,
+                pending: &mut pending,
+                conn_state: &state,
+            }
+            .write(&[0; 200])
+            .unwrap();
+        }
+
+        let frames = server.write_frames_for_test(40);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].id, first);
+
+        SendStream {
+            id: first,
+            state: &mut server,
+            pending: &mut pending,
+            conn_state: &state,
+        }
+        .set_affinity(crate::StreamAffinity::Block)
+        .unwrap();
+        assert_eq!(server.pending.len(), 1);
+        let frames = server.write_frames_for_test(40);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].id, second);
+        assert_eq!(server.pending.len(), 1);
+
+        SendStream {
+            id: first,
+            state: &mut server,
+            pending: &mut pending,
+            conn_state: &state,
+        }
+        .set_affinity(crate::StreamAffinity::Any)
+        .unwrap();
+        let frames = server.write_frames_for_test(1000);
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].id, second);
+        assert_eq!(frames[1].id, first);
         assert_eq!(server.pending.len(), 0);
     }
 
@@ -1547,7 +1672,7 @@ mod tests {
         assert_eq!(meta[0].id, id_mid);
         assert_eq!(meta[1].id, id_high);
 
-        assert!(!server.can_send_stream_data());
+        assert!(!server.can_send_any_stream_data());
         assert_eq!(server.pending.len(), 0);
     }
 
@@ -1633,7 +1758,7 @@ mod tests {
                     metas.extend(meta);
                 }
 
-                assert!(!server.can_send_stream_data());
+                assert!(!server.can_send_any_stream_data());
                 assert_eq!(server.pending.len(), 0);
 
                 let stream_ids = metas.iter().map(|m| m.id).collect::<Vec<_>>();
@@ -1768,7 +1893,7 @@ mod tests {
             metas.extend(meta);
         }
 
-        assert!(!server.can_send_stream_data());
+        assert!(!server.can_send_any_stream_data());
         assert_eq!(server.pending.len(), 0);
 
         let stream_ids = metas.iter().map(|m| m.id).collect::<Vec<_>>();
@@ -1850,7 +1975,7 @@ mod tests {
             metas.extend(meta);
         }
 
-        assert!(!server.can_send_stream_data());
+        assert!(!server.can_send_any_stream_data());
         assert_eq!(server.pending.len(), 0);
 
         let stream_ids = metas.iter().map(|m| m.id).collect::<Vec<_>>();
@@ -1915,7 +2040,7 @@ mod tests {
         stream.reset(0u32.into()).unwrap();
 
         assert_eq!(pending.reset_stream, &[(id, 0u32.into())]);
-        assert!(!server.can_send_stream_data());
+        assert!(!server.can_send_any_stream_data());
     }
 
     #[test]
